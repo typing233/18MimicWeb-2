@@ -60,7 +60,7 @@ class TestStrategySelection:
         assert result.headers.get("content-type") == "application/json"
 
     @pytest.mark.asyncio
-    async def test_bruteforce_gets_redirect(self, strategy):
+    async def test_bruteforce_gets_fake_page(self, strategy):
         request = MagicMock()
         request.url.path = "/admin/secret"
         request.client.host = "1.2.3.4"
@@ -68,7 +68,8 @@ class TestStrategySelection:
             request, risk_score=50.0, request_count=20, labels=["directory_bruteforce"]
         )
         assert result is not None
-        assert result.status_code == 302
+        assert result.status_code == 200
+        assert "text/html" in result.headers.get("content-type", "")
 
     @pytest.mark.asyncio
     async def test_very_high_risk_slow_drip(self, strategy):

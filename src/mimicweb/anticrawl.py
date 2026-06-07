@@ -80,8 +80,8 @@ class AntiCrawlerStrategy:
         if risk_score > 80 and strategies.get("slow_drip", True):
             return "slow_drip"
 
-        if "directory_bruteforce" in labels and strategies.get("redirect_deeper", True):
-            return "redirect_deeper"
+        if "directory_bruteforce" in labels and strategies.get("fake_page", True):
+            return "fake_page"
 
         if "/api/" in path and strategies.get("pollute_data", True):
             return "pollute_data"

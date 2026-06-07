@@ -69,7 +69,7 @@ class BehaviorAnalyzer:
 
             if status_code == 404:
                 session.sequential_404_count += 1
-            else:
+            elif status_code != 0:
                 session.sequential_404_count = 0
             session.last_status = status_code
 
@@ -81,6 +81,24 @@ class BehaviorAnalyzer:
                 "labels": list(session.labels),
                 "request_count": session.request_count,
             }
+
+    def update_status(self, client_ip: str, status_code: int) -> None:
+        """Update the final response status for the current request without incrementing counters."""
+        with self._lock:
+            session = self._sessions.get(client_ip)
+            if session is None:
+                return
+            old_status = session.last_status
+            if old_status == 0:
+                session.status_codes[0] = max(0, session.status_codes.get(0, 0) - 1)
+            session.status_codes[status_code] = session.status_codes.get(status_code, 0) + 1
+            session.last_status = status_code
+            if status_code == 404:
+                session.sequential_404_count += 1
+            elif old_status == 0:
+                pass
+            else:
+                session.sequential_404_count = 0
 
     def get_session(self, client_ip: str) -> SessionProfile | None:
         with self._lock:

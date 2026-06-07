@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import re
+import random
 import time
 import uuid
 import asyncio
@@ -12,13 +14,12 @@ from typing import Any
 
 import uvicorn
 from starlette.applications import Starlette
-from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import Response, JSONResponse
-from starlette.routing import Route, Mount
+from starlette.routing import Route
 
 from .config import AppConfig
-from .router import Router
+from .router import Router, _path_to_regex
 from .scanner_detector import ScannerDetector
 from .auth_simulator import AuthSimulator
 from .admin import AdminAPI
@@ -62,6 +63,22 @@ def create_storage(config: AppConfig) -> Any:
         return LocalStorage(log_dir=local_cfg.get("log_dir", "./logs"))
 
 
+def _match_configured_route(config: AppConfig, path: str, method: str) -> str | None:
+    """Return route_id if path matches an explicitly configured route, else None."""
+    for r in config.routes:
+        if not r.enabled:
+            continue
+        if r.method != "ANY" and r.method != method:
+            continue
+        if r.path_type == "regex":
+            pat = re.compile(r.path)
+        else:
+            pat = _path_to_regex(r.path)
+        if pat.match(path):
+            return r.id
+    return None
+
+
 def build_app(config_path: str = "config/routes.yaml") -> Starlette:
     config = AppConfig(config_path)
     storage = create_storage(config)
@@ -76,12 +93,36 @@ def build_app(config_path: str = "config/routes.yaml") -> Starlette:
     anticrawl = AntiCrawlerStrategy(honeypot_cfg.get("anticrawl", {}), adaptive_engine)
     log_aggregator = LogAggregator()
 
+    sampling_rate = honeypot_cfg.get("log_export", {}).get("sampling_rate", 1.0)
+    export_formats = honeypot_cfg.get("log_export", {}).get("formats", ["json", "csv"])
+
     server_name = config.server.get("name", "Apache/2.4.52 (Ubuntu)")
 
     auth_handlers: dict[tuple[str, str], Any] = {}
     for route_def in auth_sim.get_routes():
         key = (route_def["method"], route_def["path"])
         auth_handlers[key] = route_def["handler"]
+
+    def _is_honeypot_target(path: str, method: str) -> bool:
+        """Returns True if path does NOT match any explicitly configured route (i.e. it's a honeypot/catch-all target)."""
+        for r in config.routes:
+            if not r.enabled:
+                continue
+            if r.method != "ANY" and r.method != method:
+                continue
+            if r.id == "catch_all":
+                continue
+            if r.path_type == "regex":
+                pat = re.compile(r.path)
+            else:
+                pat = _path_to_regex(r.path)
+            if pat.match(path):
+                return False
+        return True
+
+    async def _store_with_sampling(entry: LogEntry) -> None:
+        if sampling_rate >= 1.0 or random.random() < sampling_rate:
+            await storage.store(entry)
 
     async def honeypot_handler(request: Request) -> Response:
         start_time = time.time()
@@ -100,6 +141,7 @@ def build_app(config_path: str = "config/routes.yaml") -> Starlette:
         client_ip = request.client.host if request.client else "unknown"
         user_agent = request.headers.get("user-agent", "")
 
+        # Single record_request per incoming request (status_code=0 as placeholder)
         behavior_result = behavior_analyzer.record_request(
             client_ip=client_ip,
             path=path,
@@ -111,6 +153,7 @@ def build_app(config_path: str = "config/routes.yaml") -> Starlette:
         behavior_labels = behavior_result["labels"]
         request_count = behavior_result["request_count"]
 
+        # --- Auth simulation routes ---
         auth_key = (method, path)
         auth_key_any = ("ANY", path)
         handler = auth_handlers.get(auth_key) or auth_handlers.get(auth_key_any)
@@ -118,8 +161,10 @@ def build_app(config_path: str = "config/routes.yaml") -> Starlette:
             response = await handler(request)
             elapsed = (time.time() - start_time) * 1000
             classification = detector.classify(request, body)
-
             all_labels = list(set(classification["labels"] + behavior_labels))
+
+            behavior_analyzer.update_status(client_ip, response.status_code)
+
             entry = LogEntry(
                 timestamp=time.time(),
                 method=method,
@@ -137,20 +182,18 @@ def build_app(config_path: str = "config/routes.yaml") -> Starlette:
                 instance_id=INSTANCE_ID,
                 risk_score=risk_score,
             )
-            await storage.store(entry)
-
-            behavior_analyzer.record_request(
-                client_ip=client_ip,
-                path=path,
-                method=method,
-                status_code=response.status_code,
-                user_agent=user_agent,
-            )
-
+            await _store_with_sampling(entry)
             response.headers["Server"] = server_name
             return response
 
-        if honeypot_cfg.get("enabled", True) and risk_score >= honeypot_cfg.get("anticrawl", {}).get("score_threshold", 30):
+        # --- Anti-crawl: only applies to honeypot targets (not configured business routes) ---
+        is_honeypot = _is_honeypot_target(path, method)
+        anticrawl_cfg = honeypot_cfg.get("anticrawl", {})
+        if (
+            is_honeypot
+            and honeypot_cfg.get("enabled", True)
+            and risk_score >= anticrawl_cfg.get("score_threshold", 30)
+        ):
             anticrawl_response = await anticrawl.apply(
                 request=request,
                 risk_score=risk_score,
@@ -161,6 +204,8 @@ def build_app(config_path: str = "config/routes.yaml") -> Starlette:
                 elapsed = (time.time() - start_time) * 1000
                 classification = detector.classify(request, body)
                 all_labels = list(set(classification["labels"] + behavior_labels))
+
+                behavior_analyzer.update_status(client_ip, anticrawl_response.status_code)
 
                 entry = LogEntry(
                     timestamp=time.time(),
@@ -179,19 +224,11 @@ def build_app(config_path: str = "config/routes.yaml") -> Starlette:
                     instance_id=INSTANCE_ID,
                     risk_score=risk_score,
                 )
-                await storage.store(entry)
-
-                behavior_analyzer.record_request(
-                    client_ip=client_ip,
-                    path=path,
-                    method=method,
-                    status_code=anticrawl_response.status_code,
-                    user_agent=user_agent,
-                )
-
+                await _store_with_sampling(entry)
                 anticrawl_response.headers["Server"] = server_name
                 return anticrawl_response
 
+        # --- Normal route dispatch ---
         response = await router.dispatch(request)
         elapsed = (time.time() - start_time) * 1000
 
@@ -201,29 +238,13 @@ def build_app(config_path: str = "config/routes.yaml") -> Starlette:
                 status_code=404,
                 headers={"Content-Type": "text/html"},
             )
-            route_id = None
-        else:
-            route_id = None
 
         classification = detector.classify(request, body)
-
-        from .router import _path_to_regex
-        import re
-        actual_route_id = None
-        for r in config.routes:
-            if not r.enabled:
-                continue
-            if r.method != "ANY" and r.method != method:
-                continue
-            if r.path_type == "regex":
-                pat = re.compile(r.path)
-            else:
-                pat = _path_to_regex(r.path)
-            if pat.match(path):
-                actual_route_id = r.id
-                break
-
+        actual_route_id = _match_configured_route(config, path, method)
         all_labels = list(set(classification["labels"] + behavior_labels))
+
+        behavior_analyzer.update_status(client_ip, response.status_code)
+
         entry = LogEntry(
             timestamp=time.time(),
             method=method,
@@ -241,18 +262,11 @@ def build_app(config_path: str = "config/routes.yaml") -> Starlette:
             instance_id=INSTANCE_ID,
             risk_score=risk_score,
         )
-        await storage.store(entry)
-
-        behavior_analyzer.record_request(
-            client_ip=client_ip,
-            path=path,
-            method=method,
-            status_code=response.status_code,
-            user_agent=user_agent,
-        )
-
+        await _store_with_sampling(entry)
         response.headers["Server"] = server_name
         return response
+
+    # --- Admin endpoints ---
 
     async def get_sessions(request: Request) -> JSONResponse:
         sessions = behavior_analyzer.sessions
@@ -314,6 +328,12 @@ def build_app(config_path: str = "config/routes.yaml") -> Starlette:
         fmt = params.get("format", "json")
         since = float(params.get("since", "0")) or None
         suspicious_only = params.get("suspicious", "").lower() == "true"
+
+        if fmt not in export_formats:
+            return JSONResponse(
+                {"error": f"format '{fmt}' not enabled, allowed: {export_formats}"},
+                status_code=400,
+            )
 
         entries = await storage.query(
             limit=10000,

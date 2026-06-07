@@ -38,6 +38,11 @@ SAMPLE_CONFIG = {
                 "slow_drip": True,
             },
         },
+        "log_export": {
+            "sampling_rate": 1.0,
+            "formats": ["json", "csv"],
+            "aggregation_intervals": ["1m", "5m", "1h", "1d"],
+        },
     },
     "scanner_detection": {
         "enabled": True,
