@@ -11,6 +11,34 @@ import yaml
 SAMPLE_CONFIG = {
     "server": {"host": "127.0.0.1", "port": 8080, "name": "TestServer/1.0"},
     "storage": {"backend": "local", "local": {"log_dir": ""}},
+    "honeypot": {
+        "enabled": True,
+        "behavior_analysis": {
+            "session_ttl_seconds": 3600,
+            "analysis_window_seconds": 300,
+            "rate_threshold_per_minute": 30,
+            "path_diversity_threshold": 20,
+            "depth_threshold": 5,
+            "sequential_404_threshold": 5,
+        },
+        "adaptive_response": {
+            "max_link_depth": 5,
+            "enable_fake_forms": True,
+            "enable_fake_search": True,
+        },
+        "anticrawl": {
+            "enabled": True,
+            "score_threshold": 30.0,
+            "delay": {"enabled": False, "min_ms": 0, "max_ms": 0},
+            "slow_drip_max_ms": 100,
+            "strategies": {
+                "redirect_deeper": True,
+                "fake_page": True,
+                "pollute_data": True,
+                "slow_drip": True,
+            },
+        },
+    },
     "scanner_detection": {
         "enabled": True,
         "rules": [

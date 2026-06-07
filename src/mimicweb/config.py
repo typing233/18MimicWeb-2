@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import asyncio
 import threading
 import time
@@ -9,6 +10,97 @@ from pathlib import Path
 from typing import Any, Callable
 
 import yaml
+
+
+_HONEYPOT_DEFAULTS: dict[str, Any] = {
+    "enabled": True,
+    "behavior_analysis": {
+        "session_ttl_seconds": 3600,
+        "analysis_window_seconds": 300,
+        "rate_threshold_per_minute": 30,
+        "path_diversity_threshold": 20,
+        "depth_threshold": 5,
+        "sequential_404_threshold": 5,
+    },
+    "adaptive_response": {
+        "max_link_depth": 5,
+        "enable_fake_forms": True,
+        "enable_fake_search": True,
+    },
+    "anticrawl": {
+        "enabled": True,
+        "score_threshold": 30.0,
+        "delay": {
+            "enabled": True,
+            "min_ms": 100,
+            "max_ms": 2000,
+        },
+        "slow_drip_max_ms": 5000,
+        "strategies": {
+            "redirect_deeper": True,
+            "fake_page": True,
+            "pollute_data": True,
+            "slow_drip": True,
+        },
+    },
+    "log_export": {
+        "sampling_rate": 1.0,
+        "formats": ["json", "csv"],
+        "aggregation_intervals": ["1m", "5m", "1h", "1d"],
+    },
+}
+
+_ENV_OVERRIDES: dict[str, tuple[str, type]] = {
+    "MIMICWEB_HONEYPOT_ENABLED": ("enabled", bool),
+    "MIMICWEB_RATE_THRESHOLD": ("behavior_analysis.rate_threshold_per_minute", int),
+    "MIMICWEB_SESSION_TTL": ("behavior_analysis.session_ttl_seconds", int),
+    "MIMICWEB_ANALYSIS_WINDOW": ("behavior_analysis.analysis_window_seconds", int),
+    "MIMICWEB_PATH_DIVERSITY_THRESHOLD": ("behavior_analysis.path_diversity_threshold", int),
+    "MIMICWEB_DEPTH_THRESHOLD": ("behavior_analysis.depth_threshold", int),
+    "MIMICWEB_404_THRESHOLD": ("behavior_analysis.sequential_404_threshold", int),
+    "MIMICWEB_MAX_LINK_DEPTH": ("adaptive_response.max_link_depth", int),
+    "MIMICWEB_FAKE_FORMS": ("adaptive_response.enable_fake_forms", bool),
+    "MIMICWEB_FAKE_SEARCH": ("adaptive_response.enable_fake_search", bool),
+    "MIMICWEB_ANTICRAWL_ENABLED": ("anticrawl.enabled", bool),
+    "MIMICWEB_ANTICRAWL_THRESHOLD": ("anticrawl.score_threshold", float),
+    "MIMICWEB_DELAY_MIN_MS": ("anticrawl.delay.min_ms", int),
+    "MIMICWEB_DELAY_MAX_MS": ("anticrawl.delay.max_ms", int),
+    "MIMICWEB_SAMPLING_RATE": ("log_export.sampling_rate", float),
+}
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    result = base.copy()
+    for key, val in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(val, dict):
+            result[key] = _deep_merge(result[key], val)
+        else:
+            result[key] = val
+    return result
+
+
+def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
+    for env_var, (path, cast) in _ENV_OVERRIDES.items():
+        value = os.environ.get(env_var)
+        if value is None:
+            continue
+        if cast == bool:
+            parsed: Any = value.lower() in ("1", "true", "yes")
+        elif cast == int:
+            parsed = int(value)
+        elif cast == float:
+            parsed = float(value)
+        else:
+            parsed = value
+
+        keys = path.split(".")
+        target = config
+        for k in keys[:-1]:
+            if k not in target:
+                target[k] = {}
+            target = target[k]
+        target[keys[-1]] = parsed
+    return config
 
 
 class RouteConfig:
@@ -75,6 +167,12 @@ class AppConfig:
     @property
     def scanner_detection(self) -> dict[str, Any]:
         return self._data.get("scanner_detection", {"enabled": False})
+
+    @property
+    def honeypot_config(self) -> dict[str, Any]:
+        file_cfg = self._data.get("honeypot", {})
+        merged = _deep_merge(_HONEYPOT_DEFAULTS, file_cfg)
+        return _apply_env_overrides(merged)
 
     @property
     def routes(self) -> list[RouteConfig]:

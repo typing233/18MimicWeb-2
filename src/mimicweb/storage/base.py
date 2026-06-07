@@ -24,6 +24,7 @@ class LogEntry:
     labels: list[str]
     body_preview: str = ""
     instance_id: str = ""
+    risk_score: float = 0.0
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -42,6 +43,7 @@ class LogEntry:
             ";".join(self.labels),
             self.body_preview[:200],
             self.instance_id,
+            f"{self.risk_score:.1f}",
         ]
 
     @staticmethod
@@ -49,7 +51,7 @@ class LogEntry:
         return [
             "timestamp", "method", "path", "query", "client_ip",
             "status_code", "response_time_ms", "route_id", "suspicious",
-            "labels", "body_preview", "instance_id",
+            "labels", "body_preview", "instance_id", "risk_score",
         ]
 
     @classmethod
