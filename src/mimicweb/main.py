@@ -44,6 +44,15 @@ def create_storage(config: AppConfig) -> Any:
         from .storage.postgres_backend import PostgresStorage
         pg_cfg = storage_cfg.get("postgres", {})
         return PostgresStorage(dsn=pg_cfg.get("dsn", ""))
+    elif backend == "composite":
+        from .storage.composite import CompositeStorage
+        redis_cfg = storage_cfg.get("redis", {})
+        pg_cfg = storage_cfg.get("postgres", {})
+        return CompositeStorage(
+            redis_url=redis_cfg.get("url", "redis://localhost:6379/0"),
+            redis_prefix=redis_cfg.get("prefix", "mimicweb:"),
+            postgres_dsn=pg_cfg.get("dsn", ""),
+        )
     else:
         local_cfg = storage_cfg.get("local", {})
         return LocalStorage(log_dir=local_cfg.get("log_dir", "./logs"))

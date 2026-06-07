@@ -40,11 +40,29 @@ mimicweb -c config/routes.yaml
 ### Docker Compose 部署
 
 ```bash
-# 基础部署（含 Redis 共享日志）
+# 基础多实例部署（2 节点 + Redis 共享日志）
 docker compose up -d
 
-# 包含 PostgreSQL 长期审计
+# 包含 PostgreSQL 审计的完整部署
 docker compose --profile audit up -d
+```
+
+**部署模式说明：**
+
+| 模式 | 命令 | 说明 |
+|------|------|------|
+| 基础 | `docker compose up -d` | 2 个蜜罐实例 (8080/8081) + Redis，日志实时共享 |
+| 审计 | `docker compose --profile audit up -d` | 基础 + PostgreSQL + 审计实例 (8082)，双写模式 |
+
+- **基础模式**：`config/routes-docker.yaml`，存储后端为 Redis，两个实例写入的日志互相可见
+- **审计模式**：`config/routes-audit.yaml`，存储后端为 `composite`（Redis + PostgreSQL），实时日志共享 + 长期审计持久化
+
+```bash
+# 验证多实例日志共享
+./scripts/verify_docker.sh
+
+# 验证含 PostgreSQL 审计
+./scripts/verify_docker.sh --audit
 ```
 
 ## 配置详解
@@ -137,12 +155,21 @@ scanner_detection:
 
 ```yaml
 storage:
-  backend: "redis"  # local | redis | postgres
+  # 可选值: local | redis | postgres | composite
+  backend: "redis"
+  
+  local:
+    log_dir: "./logs"          # JSON Lines 文件存储
+  
   redis:
     url: "redis://localhost:6379/0"
-    prefix: "mimicweb:"
+    prefix: "mimicweb:"       # 多实例通过相同前缀共享日志
+  
   postgres:
     dsn: "postgresql://user:pass@host:5432/mimicweb"
+  
+  # composite = Redis (实时共享) + PostgreSQL (长期审计) 双写
+  # 查询优先走 PostgreSQL，PostgreSQL 不可用时降级到 Redis
 ```
 
 ## OAuth2 模拟端点

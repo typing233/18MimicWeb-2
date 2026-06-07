@@ -1,0 +1,82 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+  name: "Apache/2.4.52 (Ubuntu)"
+
+storage:
+  backend: "composite"
+  redis:
+    url: "redis://redis:6379/0"
+    prefix: "mimicweb:"
+  postgres:
+    dsn: "postgresql://mimicweb:mimicweb@postgres:5432/mimicweb"
+
+scanner_detection:
+  enabled: true
+  rules:
+    - pattern: "sqlmap|nikto|nmap|dirbuster|gobuster|wfuzz"
+      field: "user_agent"
+      label: "known_scanner"
+    - pattern: "\\.\\./"
+      field: "path"
+      label: "path_traversal"
+    - pattern: "<script|javascript:|on\\w+="
+      field: "body"
+      label: "xss_probe"
+    - pattern: "' OR |\" OR |UNION SELECT|DROP TABLE"
+      field: "body"
+      label: "sqli_probe"
+
+routes:
+  - id: "homepage"
+    path: "/"
+    method: "GET"
+    enabled: true
+    response:
+      status: 200
+      headers:
+        Content-Type: "text/html; charset=utf-8"
+      body: |
+        <!DOCTYPE html>
+        <html><head><title>Internal Portal</title></head>
+        <body><h1>Welcome to Corp Portal</h1>
+        <p>Please <a href="/login">login</a> to continue.</p></body></html>
+
+  - id: "login_page"
+    path: "/login"
+    method: "GET"
+    enabled: true
+    response:
+      status: 200
+      headers:
+        Content-Type: "text/html; charset=utf-8"
+      body: |
+        <!DOCTYPE html>
+        <html><head><title>Login</title></head>
+        <body><h1>Login</h1>
+        <form method="POST" action="/api/auth/login">
+        <input name="username"><input name="password" type="password">
+        <button>Sign In</button></form></body></html>
+
+  - id: "api_users"
+    path: "/api/v1/users/{user_id}"
+    method: "GET"
+    enabled: true
+    response:
+      status: 200
+      headers:
+        Content-Type: "application/json"
+      body: '{"id":"{{path:user_id}}","name":"User {{path:user_id}}","email":"user{{path:user_id}}@corp.internal","session":"{{random_hex:32}}"}'
+    delay:
+      min_ms: 30
+      max_ms: 150
+
+  - id: "health"
+    path: "/health"
+    method: "GET"
+    enabled: true
+    response:
+      status: 200
+      headers:
+        Content-Type: "application/json"
+      body: '{"status":"ok","uptime":"{{uptime_seconds}}s"}'

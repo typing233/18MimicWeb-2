@@ -10,7 +10,8 @@ RUN pip install --no-cache-dir -e . && \
     mkdir -p /app/logs
 
 ENV MIMICWEB_INSTANCE_ID=""
+ENV MIMICWEB_CONFIG="config/routes-docker.yaml"
 
 EXPOSE 8080
 
-CMD ["python", "-m", "mimicweb.main", "-c", "config/routes.yaml"]
+CMD ["sh", "-c", "python -m mimicweb.main -c ${MIMICWEB_CONFIG}"]
